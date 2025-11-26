@@ -22,9 +22,19 @@ export class EDAAppStack extends cdk.Stack {
       publicReadAccess: false,
     });
 
+    //  NEW
+    const dlq = new sqs.Queue(this, "img-dlq", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+    });
+
     // --- SQS queue (for image processing consumer) ---
+    // UPDATE
     const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
+      deadLetterQueue: {
+        queue: dlq,
+        maxReceiveCount: 1,
+      },
     });
 
     // --- SNS topic for fan-out ---
@@ -107,6 +117,23 @@ export class EDAAppStack extends cdk.Stack {
         resources: ["*"],
       })
     );
+
+    // Add the lambda function to process the messages in the DLQ:
+    const rejectedImageFn = new lambdanode.NodejsFunction(this, "RejectedImagesFn", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: `${__dirname}/../lambdas/rejectedImages.ts`,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 128,
+    });
+
+    // Make the new queue (DLQ) an event source:
+    const rejectedImageEventSource = new events.SqsEventSource(dlq, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(10),
+    });
+
+    // Set the new event source as the trigger for the new lambda function:
+    rejectedImageFn.addEventSource(rejectedImageEventSource);
 
     // --- Output (unchanged) ---
     new cdk.CfnOutput(this, "bucketName", {
