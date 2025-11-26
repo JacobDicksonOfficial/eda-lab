@@ -70,7 +70,25 @@ export class EDAAppStack extends cdk.Stack {
     );
 
     // --- SNS -> SQS (image processing queue subscribes to topic) ---
-    newImageTopic.addSubscription(new subs.SqsSubscription(imageProcessQueue));
+    // (Replaced the simple subscription with body-filter + raw delivery)
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(imageProcessQueue, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchPrefixes: ["image"],
+                  })
+                ),
+              }),
+            }),
+          }),
+        },
+        rawMessageDelivery: true,
+      })
+    );
 
     // --- SQS -> Lambda (image processing) ---
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
@@ -99,8 +117,25 @@ export class EDAAppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
-    // c) subscribe mail queue to the topic
-    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
+    // c) subscribe mail queue to the topic  (now with body-filter + raw delivery)
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(mailerQ, {
+        filterPolicyWithMessageBody: {
+          Records: sns.FilterOrPolicy.policy({
+            s3: sns.FilterOrPolicy.policy({
+              object: sns.FilterOrPolicy.policy({
+                key: sns.FilterOrPolicy.filter(
+                  sns.SubscriptionFilter.stringFilter({
+                    matchPrefixes: ["image"],
+                  })
+                ),
+              }),
+            }),
+          }),
+        },
+        rawMessageDelivery: true,
+      })
+    );
 
     // d) event source from mailerQ to mailer lambda
     const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
@@ -134,6 +169,33 @@ export class EDAAppStack extends cdk.Stack {
 
     // Set the new event source as the trigger for the new lambda function:
     rejectedImageFn.addEventSource(rejectedImageEventSource);
+
+    // Add a new lambda function:
+    const addMetadataFn = new lambdanode.NodejsFunction(this, "addMetadataFn", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: `${__dirname}/../lambdas/addImageMetadata.ts`,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 128,
+      environment: {
+        TABLE_NAME: imagesTable.tableName,
+      },
+    });
+
+    // Subscribe this lambda to the topic, and enable filtering to ensure the function receives the correct messages:
+    newImageTopic.addSubscription(
+      new subs.LambdaSubscription(addMetadataFn, {
+        filterPolicy: {
+          metadata_type: sns.SubscriptionFilter.stringFilter({
+            allowlist: ["Caption", "Date", "Photographer"],
+          }),
+        },
+      })
+    );
+
+    // Output the topic ARN:
+    new cdk.CfnOutput(this, "SnsTopicArn", {
+      value: newImageTopic.topicArn,
+    });
 
     // --- Output (unchanged) ---
     new cdk.CfnOutput(this, "bucketName", {

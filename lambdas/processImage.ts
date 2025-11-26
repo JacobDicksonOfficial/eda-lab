@@ -1,4 +1,3 @@
-/* eslint-disable import/extensions, import/no-absolute-path */
 import { SQSHandler } from "aws-lambda";
 import {
   GetObjectCommand,
@@ -21,7 +20,8 @@ export const handler: SQSHandler = async (event) => {
     const recordBody = JSON.parse(record.body);
 
     // 2) SNS put the original S3 event inside the Message property (also a string)
-    const snsMessage = JSON.parse(recordBody.Message);
+    //    With rawMessageDelivery, the body *is already* the S3 event; support both:
+    const snsMessage = recordBody.Message ? JSON.parse(recordBody.Message) : recordBody;
 
     if (snsMessage.Records) {
       console.log("Record body ", JSON.stringify(snsMessage));
