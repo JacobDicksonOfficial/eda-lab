@@ -20,32 +20,27 @@ type ContactDetails = {
 
 const client = new SESClient({ region: SES_REGION});
 
-export const handler: SQSHandler = async (event: any) => {
+// Add some imports:
+import { DynamoDBStreamHandler } from "aws-lambda";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
+
+// Replace the handler function with the following:
+export const handler: DynamoDBStreamHandler = async (event: any) => {
   console.log("Event ", JSON.stringify(event));
   for (const record of event.Records) {
-    const recordBody = JSON.parse(record.body);
-    const snsMessage = recordBody.Message ? JSON.parse(recordBody.Message) : recordBody;
-
-
-    if (snsMessage.Records) {
-      console.log("Record body ", JSON.stringify(snsMessage));
-      for (const s3Message of snsMessage.Records) { // FIX: use s3Message consistently
-        const s3e = s3Message.s3;
-        const srcBucket = s3e.bucket.name;
-        // Object key may have spaces or unicode non-ASCII characters.
-        const srcKey = decodeURIComponent(s3e.object.key.replace(/\+/g, " "));
-        try {
-          const { name, email, message }: ContactDetails = {
-            name: "The Photo Album",
-            email: SES_EMAIL_FROM,
-            message: `We received your Image. Its URL is s3://${srcBucket}/${srcKey}`,
-          };
-          const params = sendEmailParams({ name, email, message });
-          await client.send(new SendEmailCommand(params));
-        } catch (error: unknown) {
-          console.log("ERROR is: ", error);
-          // return;
-        }
+    if (record.eventName == "INSERT") {
+      const dbItem = unmarshall(record.dynamodb.NewImage);
+      try {
+        const { name, email, message }: ContactDetails = {
+          name: "The Photo Album",
+          email: SES_EMAIL_FROM,
+          message: `We received your Image ${dbItem.name}`,
+        };
+        const params = sendEmailParams({ name, email, message });
+        await client.send(new SendEmailCommand(params));
+      } catch (error: unknown) {
+        console.log("ERROR is: ", error);
+        // return;
       }
     }
   }

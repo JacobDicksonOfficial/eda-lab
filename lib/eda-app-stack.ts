@@ -9,6 +9,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as source from "aws-cdk-lib/aws-lambda-event-sources"; // Add an import:
 import { Construct } from "constructs";
 
 export class EDAAppStack extends cdk.Stack {
@@ -48,6 +49,7 @@ export class EDAAppStack extends cdk.Stack {
       partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       tableName: "Imagess",
+      stream: dynamodb.StreamViewType.NEW_IMAGE,         //. UPDATE
     });
 
     // --- ProcessImage Lambda (now with env for DDB + region + bucket) ---
@@ -101,12 +103,7 @@ export class EDAAppStack extends cdk.Stack {
     imagesBucket.grantRead(processImageFn);
     imagesTable.grantReadWriteData(processImageFn);
 
-    // ------------- SES fan-out path (Mailer) -------------
-
-    // a) second queue dedicated to mailing
-    const mailerQ = new sqs.Queue(this, "mailer-q", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
+    // ------------- SES path now via DynamoDB Streams -------------
 
     // b) mailer lambda function
     const mailerFn = new lambdanode.NodejsFunction(this, "mailer", {
@@ -117,33 +114,6 @@ export class EDAAppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
-    // c) subscribe mail queue to the topic  (now with body-filter + raw delivery)
-    newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ, {
-        filterPolicyWithMessageBody: {
-          Records: sns.FilterOrPolicy.policy({
-            s3: sns.FilterOrPolicy.policy({
-              object: sns.FilterOrPolicy.policy({
-                key: sns.FilterOrPolicy.filter(
-                  sns.SubscriptionFilter.stringFilter({
-                    matchPrefixes: ["image"],
-                  })
-                ),
-              }),
-            }),
-          }),
-        },
-        rawMessageDelivery: true,
-      })
-    );
-
-    // d) event source from mailerQ to mailer lambda
-    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    });
-    mailerFn.addEventSource(newImageMailEventSource);
-
     // e) allow SES sends for the mailer lambda
     mailerFn.addToRolePolicy(
       new iam.PolicyStatement({
@@ -153,42 +123,29 @@ export class EDAAppStack extends cdk.Stack {
       })
     );
 
-    // Add the lambda function to process the messages in the DLQ:
-    const rejectedImageFn = new lambdanode.NodejsFunction(this, "RejectedImagesFn", {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: `${__dirname}/../lambdas/rejectedImages.ts`,
-      timeout: cdk.Duration.seconds(15),
-      memorySize: 128,
-    });
+    // Remove the code that sets the mail queue as the event source for the lambda:
+    // mailerFn.addEventSource(newImageMailEventSource);
 
-    // Make the new queue (DLQ) an event source:
-    const rejectedImageEventSource = new events.SqsEventSource(dlq, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(10),
-    });
+    // Remove the code that sets the subscription of the mail queue to the topic:
+    // newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ), {
+    //   . . . configuration . . . 
+    // });
 
-    // Set the new event source as the trigger for the new lambda function:
-    rejectedImageFn.addEventSource(rejectedImageEventSource);
+    // Remove the code that sets sets the mail queue event source to triggers the lambda function:
+    // const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
+    //   batchSize: 5,
+    //   maxBatchingWindow: cdk.Duration.seconds(5),
+    // });
 
-    // Add a new lambda function:
-    const addMetadataFn = new lambdanode.NodejsFunction(this, "addMetadataFn", {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: `${__dirname}/../lambdas/addImageMetadata.ts`,
-      timeout: cdk.Duration.seconds(15),
-      memorySize: 128,
-      environment: {
-        TABLE_NAME: imagesTable.tableName,
-      },
-    });
+    // Remove the mail SQS queue code:
+    // const mailerQ = new sqs.Queue(this, "mailer-q", {
+    //   receiveMessageWaitTime: cdk.Duration.seconds(10),
+    // });
 
-    // Subscribe this lambda to the topic, and enable filtering to ensure the function receives the correct messages:
-    newImageTopic.addSubscription(
-      new subs.LambdaSubscription(addMetadataFn, {
-        filterPolicy: {
-          metadata_type: sns.SubscriptionFilter.stringFilter({
-            allowlist: ["Caption", "Date", "Photographer"],
-          }),
-        },
+    // Set the DnamoDB stream as the event source for the lambda: the Dy
+    mailerFn.addEventSource(
+      new source.DynamoEventSource(imagesTable, {
+        startingPosition: lambda.StartingPosition.LATEST,
       })
     );
 
